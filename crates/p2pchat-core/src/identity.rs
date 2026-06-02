@@ -49,7 +49,11 @@ pub struct KdfParams {
 impl Default for KdfParams {
     fn default() -> Self {
         // 64 MiB, 3 iterations, 1 lane. OWASP-recommended floor for interactive use.
-        Self { m_kib: 64 * 1024, t: 3, p: 1 }
+        Self {
+            m_kib: 64 * 1024,
+            t: 3,
+            p: 1,
+        }
     }
 }
 
@@ -116,7 +120,9 @@ impl Identity {
 
     /// Reconstruct an identity from a 32-byte secret seed.
     pub fn from_seed(seed: [u8; 32]) -> Self {
-        Self { signing_key: SigningKey::from_bytes(&seed) }
+        Self {
+            signing_key: SigningKey::from_bytes(&seed),
+        }
     }
 
     /// 32-byte public key (NodeID).
@@ -159,7 +165,10 @@ impl std::fmt::Debug for Identity {
 /// Parse the file header (magic, version, KDF id and params) without decrypting.
 pub fn parse_header(blob: &[u8]) -> Result<Header> {
     if blob.len() < HEADER_LEN {
-        return Err(Error::FileTooShort { expected: HEADER_LEN, actual: blob.len() });
+        return Err(Error::FileTooShort {
+            expected: HEADER_LEN,
+            actual: blob.len(),
+        });
     }
     if &blob[..8] != MAGIC {
         return Err(Error::InvalidMagic);
@@ -175,7 +184,10 @@ pub fn parse_header(blob: &[u8]) -> Result<Header> {
     let m_kib = u32::from_le_bytes(blob[10..14].try_into().expect("checked len"));
     let t = u32::from_le_bytes(blob[14..18].try_into().expect("checked len"));
     let p = u32::from_le_bytes(blob[18..22].try_into().expect("checked len"));
-    Ok(Header { version, kdf: KdfParams { m_kib, t, p } })
+    Ok(Header {
+        version,
+        kdf: KdfParams { m_kib, t, p },
+    })
 }
 
 /// Encrypt a 32-byte seed into a self-contained identity file blob.
@@ -289,13 +301,26 @@ mod tests {
     #[test]
     fn round_trip_low_params_for_test_speed() {
         // 1 MiB, 1 iter, 1 lane. Validates the format, doesn't bench KDF.
-        round_trip_with_params(KdfParams { m_kib: 1024, t: 1, p: 1 });
+        round_trip_with_params(KdfParams {
+            m_kib: 1024,
+            t: 1,
+            p: 1,
+        });
     }
 
     #[test]
     fn wrong_passphrase_is_typed_error() {
         let id = Identity::generate();
-        let blob = encrypt(&id.seed(), "right", KdfParams { m_kib: 1024, t: 1, p: 1 }).unwrap();
+        let blob = encrypt(
+            &id.seed(),
+            "right",
+            KdfParams {
+                m_kib: 1024,
+                t: 1,
+                p: 1,
+            },
+        )
+        .unwrap();
         let err = decrypt(&blob, "wrong").unwrap_err();
         assert!(matches!(err, Error::WrongPassphrase), "got {err:?}");
     }
@@ -303,11 +328,23 @@ mod tests {
     #[test]
     fn tampered_ciphertext_fails() {
         let id = Identity::generate();
-        let mut blob = encrypt(&id.seed(), "x", KdfParams { m_kib: 1024, t: 1, p: 1 }).unwrap();
+        let mut blob = encrypt(
+            &id.seed(),
+            "x",
+            KdfParams {
+                m_kib: 1024,
+                t: 1,
+                p: 1,
+            },
+        )
+        .unwrap();
         let last = blob.len() - 1;
         blob[last] ^= 0x01;
         let err = decrypt(&blob, "x").unwrap_err();
-        assert!(matches!(err, Error::WrongPassphrase | Error::Tampered), "got {err:?}");
+        assert!(
+            matches!(err, Error::WrongPassphrase | Error::Tampered),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -326,7 +363,16 @@ mod tests {
 
     #[test]
     fn bad_version_is_rejected() {
-        let mut blob = encrypt(&[1u8; 32], "x", KdfParams { m_kib: 1024, t: 1, p: 1 }).unwrap();
+        let mut blob = encrypt(
+            &[1u8; 32],
+            "x",
+            KdfParams {
+                m_kib: 1024,
+                t: 1,
+                p: 1,
+            },
+        )
+        .unwrap();
         blob[8] = 99;
         let err = decrypt(&blob, "x").unwrap_err();
         assert!(matches!(err, Error::UnsupportedVersion(99)), "got {err:?}");
@@ -334,7 +380,16 @@ mod tests {
 
     #[test]
     fn bad_kdf_id_is_rejected() {
-        let mut blob = encrypt(&[1u8; 32], "x", KdfParams { m_kib: 1024, t: 1, p: 1 }).unwrap();
+        let mut blob = encrypt(
+            &[1u8; 32],
+            "x",
+            KdfParams {
+                m_kib: 1024,
+                t: 1,
+                p: 1,
+            },
+        )
+        .unwrap();
         blob[9] = 99;
         let err = decrypt(&blob, "x").unwrap_err();
         assert!(matches!(err, Error::UnsupportedKdf(99)), "got {err:?}");
@@ -342,15 +397,34 @@ mod tests {
 
     #[test]
     fn header_parses_without_passphrase() {
-        let blob = encrypt(&[1u8; 32], "x", KdfParams { m_kib: 1024, t: 1, p: 1 }).unwrap();
+        let blob = encrypt(
+            &[1u8; 32],
+            "x",
+            KdfParams {
+                m_kib: 1024,
+                t: 1,
+                p: 1,
+            },
+        )
+        .unwrap();
         let h = parse_header(&blob).unwrap();
         assert_eq!(h.version, FILE_VERSION);
-        assert_eq!(h.kdf, KdfParams { m_kib: 1024, t: 1, p: 1 });
+        assert_eq!(
+            h.kdf,
+            KdfParams {
+                m_kib: 1024,
+                t: 1,
+                p: 1
+            }
+        );
     }
 
     #[test]
     fn header_rejects_short_input() {
-        assert!(matches!(parse_header(&[0; 10]), Err(Error::FileTooShort { .. })));
+        assert!(matches!(
+            parse_header(&[0; 10]),
+            Err(Error::FileTooShort { .. })
+        ));
     }
 
     #[test]
@@ -373,8 +447,14 @@ mod tests {
     fn debug_redacts_secrets() {
         let id = Identity::generate();
         let s = format!("{id:?}");
-        assert!(!s.contains(&hex::encode(id.seed())), "seed leaked in Debug: {s}");
-        assert!(s.contains(&hex::encode(id.node_id())), "node id missing in Debug: {s}");
+        assert!(
+            !s.contains(&hex::encode(id.seed())),
+            "seed leaked in Debug: {s}"
+        );
+        assert!(
+            s.contains(&hex::encode(id.node_id())),
+            "node id missing in Debug: {s}"
+        );
     }
 
     #[test]

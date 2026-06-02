@@ -29,4 +29,4 @@ secrecy = "0.8"
 
 # CLI (gui only)
 rpassword = "7"
-qr2term = "0.3"
+qrcode = "0.14"
