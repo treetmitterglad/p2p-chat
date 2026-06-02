@@ -1,0 +1,27 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# Cargo
+Cargo.lock.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# p2pchat
+# Encrypted identity files (never commit secrets)
+/*.enc
+**/identity.enc
+**/p2pchat-*.db
+**/p2pchat-*.db-*
+
+# Local config overrides
+.cargo/config.toml.local
