@@ -1,0 +1,18 @@
+[package]
+name = "p2pchat-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "p2pchat GUI binary (iced)."
+
+[[bin]]
+name = "p2pchat"
+path = "src/main.rs"
+
+[dependencies]
+p2pchat-core = { path = "../p2pchat-core" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/p2pchat-core",
+    "crates/p2pchat-gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "2"
