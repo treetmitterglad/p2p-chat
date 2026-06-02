@@ -16,6 +16,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time", "io-util"] }
+futures-util = "0.3"
+n0-future = "0.3"
 
 # Identity
 ed25519-dalek = { version = "2", features = ["rand_core"] }
@@ -26,6 +29,9 @@ sha2 = "0.10"
 hex = "0.4"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 secrecy = "0.8"
+
+# Transport
+iroh = "1.0.0-rc.1"
 
 # CLI (gui only)
 rpassword = "7"

@@ -41,6 +41,9 @@ pub fn init_tracing() {
 /// Long-term identity (Ed25519 keypair, encrypted at rest).
 pub mod identity;
 
+/// iroh-based transport (QUIC over public relay with NAT traversal).
+pub mod transport;
+
 #[cfg(test)]
 mod tests {
     use super::*;
