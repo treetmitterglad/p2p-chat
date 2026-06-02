@@ -21,6 +21,11 @@ pub mod config {
         }
         PathBuf::from(".p2pchat")
     }
+
+    /// Path to the encrypted identity file.
+    pub fn identity_path() -> PathBuf {
+        config_dir().join("identity.enc")
+    }
 }
 
 /// Initialize global tracing subscriber. Idempotent.
@@ -32,6 +37,9 @@ pub fn init_tracing() {
         .with(fmt::layer().with_target(false))
         .try_init();
 }
+
+/// Long-term identity (Ed25519 keypair, encrypted at rest).
+pub mod identity;
 
 #[cfg(test)]
 mod tests {
