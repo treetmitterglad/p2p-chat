@@ -8,7 +8,10 @@ all-features = false
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
-ignore = []
+# RUSTSEC-2024-0436: `paste` is unmaintained. Pulled in transitively via
+# iroh → netwatch → netdev → netlink-packet-core. No upstream fix; would
+# require waiting for an iroh release. Acknowledge until then.
+ignore = ["RUSTSEC-2024-0436"]
 
 [licenses]
 allow = [
@@ -21,6 +24,13 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "Unicode-3.0",
+    # Public-domain / permissive variants from transitive deps (iroh):
+    "Unlicense",
+    "CDLA-Permissive-2.0",
+    # Weak file-level copyleft (MPL-2.0) — pulled in transitively via
+    # attohttpc → igd-next → iroh's portmapper. Does not affect our
+    # source license. Acceptable as a transitive dep only.
+    "MPL-2.0",
 ]
 confidence-threshold = 0.8
 

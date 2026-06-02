@@ -9,10 +9,10 @@
 
 use std::str::FromStr;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use iroh::{
-    endpoint::{presets, Connection, Endpoint},
     EndpointAddr, EndpointId, RelayUrl, SecretKey,
+    endpoint::{Connection, Endpoint, presets},
 };
 
 /// Application-Layer Protocol Negotiation identifier for p2pchat.
@@ -170,10 +170,12 @@ impl FromStr for Ticket {
             Some((id, relay)) => (id, Some(relay)),
             None => (s, None),
         };
-        let id = EndpointId::from_str(id_str).map_err(|e| TicketParseError::NodeId(e.to_string()))?;
+        let id =
+            EndpointId::from_str(id_str).map_err(|e| TicketParseError::NodeId(e.to_string()))?;
         let addr = match relay_str {
             Some(r) => {
-                let url = RelayUrl::from_str(r).map_err(|e| TicketParseError::Relay(e.to_string()))?;
+                let url =
+                    RelayUrl::from_str(r).map_err(|e| TicketParseError::Relay(e.to_string()))?;
                 EndpointAddr::new(id).with_relay_url(url)
             }
             None => EndpointAddr::new(id).with_relay_url(default_relay_url()),
@@ -199,7 +201,6 @@ pub async fn read_exact_stream(
     mut stream: iroh::endpoint::RecvStream,
     n: usize,
 ) -> Result<Vec<u8>> {
-    use futures_util::AsyncReadExt;
     let mut buf = vec![0u8; n];
     stream.read_exact(&mut buf).await.context("read_exact")?;
     Ok(buf)

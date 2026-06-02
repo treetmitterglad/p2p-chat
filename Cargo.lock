@@ -2360,11 +2360,13 @@ name = "p2pchat-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "hex",
  "p2pchat-core",
  "qrcode",
  "rpassword",
  "thiserror",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
