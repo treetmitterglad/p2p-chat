@@ -39,7 +39,7 @@ rpassword = "7"
 qrcode = "0.14"
 
 # GUI
-iced = { version = "0.13", features = ["image"] }
+iced = { version = "0.13", features = ["image", "tokio"] }
 
 # Message protocol
 postcard = "1"

@@ -20,6 +20,8 @@ use std::time::Duration;
 use anyhow::Context;
 use p2pchat_core::{VERSION, config, identity, init_tracing, session, storage, transport};
 
+mod gui;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Subcommand {
     Gui,
@@ -96,17 +98,20 @@ async fn run() -> anyhow::Result<()> {
     tracing::debug!(?cmd, "starting p2pchat");
 
     match cmd {
-        Subcommand::Gui => run_gui_stub(),
+        Subcommand::Gui => run_gui().await,
         Subcommand::Init => run_init(),
         Subcommand::Doctor => parse_doctor_flags().await,
         Subcommand::Chat { ticket } => run_chat(ticket).await,
     }
 }
 
-fn run_gui_stub() -> anyhow::Result<()> {
-    println!("p2pchat {VERSION}");
-    println!("GUI is not implemented yet (Phase 5 of the implementation plan).");
-    println!("For now, use `p2pchat init` and `p2pchat doctor` from the CLI.");
+async fn run_gui() -> anyhow::Result<()> {
+    let identity = session::load_identity_interactive().await?;
+    let store = storage::Store::open(&config::db_path())
+        .await
+        .context("open database")?;
+    gui::run(identity, store)
+        .map_err(|e| anyhow::anyhow!("GUI error: {e}"))?;
     Ok(())
 }
 
