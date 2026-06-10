@@ -1,4 +1,5 @@
 # p2p-chat
+**Latest:** Planned release for v0.1.0 is June 25, 2026.
 
 A peer-to-peer, end-to-end encrypted chat app for two people. Built to replace Discord with something we actually own.
 
