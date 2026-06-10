@@ -61,6 +61,9 @@ pub mod ratchet;
 /// SQLite-backed persistence for messages, contacts, and sessions.
 pub mod storage;
 
+/// Async chat session manager: connect, handshake, message I/O.
+pub mod session;
+
 #[cfg(test)]
 mod tests {
     use super::*;

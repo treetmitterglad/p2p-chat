@@ -158,7 +158,7 @@ where
 }
 
 /// Read one length-prefixed frame from an async reader.
-async fn read_one_frame<R: tokio::io::AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
+pub(crate) async fn read_one_frame<R: tokio::io::AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
 
     let mut header = [0u8; 4];
