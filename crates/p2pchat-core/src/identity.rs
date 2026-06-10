@@ -268,6 +268,9 @@ pub fn save_to_path(identity: &Identity, passphrase: &str, path: &Path) -> Resul
         f.write_all(&blob)?;
         f.sync_all()?;
     }
+    // Remove destination first so rename works on all platforms (Windows
+    // rejects rename when destination exists).
+    let _ = fs::remove_file(path);
     fs::rename(&tmp, path)?;
     Ok(())
 }

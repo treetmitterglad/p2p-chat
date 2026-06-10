@@ -59,3 +59,6 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 # Storage (sqlx uses tokio-rustls for runtime)
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+# Cross-platform paths
+dirs = "5"

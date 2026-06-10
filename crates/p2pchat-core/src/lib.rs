@@ -11,13 +11,14 @@ pub mod config {
     use std::path::PathBuf;
 
     /// Root directory for p2pchat state (`identity.enc`, future message db, etc.).
-    /// Honors `$XDG_CONFIG_HOME` on Linux; falls back to `~/.config/p2pchat`.
+    ///
+    /// - **Linux:** `$XDG_CONFIG_HOME/p2pchat` or `$HOME/.config/p2pchat`
+    /// - **Windows:** `%APPDATA%/p2pchat`
+    /// - **macOS:** `$HOME/Library/Application Support/p2pchat`
+    /// - **Fallback:** `.p2pchat` (relative to CWD)
     pub fn config_dir() -> PathBuf {
-        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-            return PathBuf::from(xdg).join("p2pchat");
-        }
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(".config").join("p2pchat");
+        if let Some(base) = dirs::config_dir() {
+            return base.join("p2pchat");
         }
         PathBuf::from(".p2pchat")
     }
