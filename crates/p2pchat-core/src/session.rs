@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use sha2::Digest;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 use crate::crypto;
@@ -96,15 +97,18 @@ pub async fn connect_to_peer(
     let peer_id = *conn.remote_id().as_bytes();
     let (send_stream, recv_stream) = conn.open_bi().await?;
 
+    let mut reader = tokio::io::BufReader::new(recv_stream);
+    let mut writer = tokio::io::BufWriter::new(send_stream);
+
     let result = crypto::perform_handshake(
         HandshakeRole::Initiator,
         &identity.seed(),
-        &mut tokio::io::BufReader::new(recv_stream),
-        &mut tokio::io::BufWriter::new(send_stream),
+        &mut reader,
+        &mut writer,
     )
     .await?;
 
-    spawn_session(store, identity, result, peer_id).await
+    spawn_session(store, identity, result, peer_id, reader, writer).await
 }
 
 /// Listen for an incoming connection as responder.
@@ -130,15 +134,18 @@ pub async fn listen_for_peer(
     let peer_id = *conn.remote_id().as_bytes();
     let (send_stream, recv_stream) = conn.accept_bi().await?;
 
+    let mut reader = tokio::io::BufReader::new(recv_stream);
+    let mut writer = tokio::io::BufWriter::new(send_stream);
+
     let result = crypto::perform_handshake(
         HandshakeRole::Responder,
         &identity.seed(),
-        &mut tokio::io::BufReader::new(recv_stream),
-        &mut tokio::io::BufWriter::new(send_stream),
+        &mut reader,
+        &mut writer,
     )
     .await?;
 
-    spawn_session(store, identity, result, peer_id)
+    spawn_session(store, identity, result, peer_id, reader, writer)
         .await
         .map(|handle| (ticket, handle))
 }
@@ -147,16 +154,22 @@ pub async fn listen_for_peer(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-async fn spawn_session(
+async fn spawn_session<R, W>(
     store: storage::Store,
     identity: identity::Identity,
     handshake: crypto::HandshakeResult,
     peer_id: [u8; 32],
-) -> Result<SessionHandle> {
+    reader: R,
+    writer: W,
+) -> Result<SessionHandle>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let peer_static = handshake.peer_static.unwrap_or_default();
     let is_initiator = identity.node_id() < peer_static;
 
-    let mut ratchet = Ratchet::new(
+    let ratchet = Ratchet::new(
         &handshake.handshake_hash,
         &identity.seed(),
         &peer_static,
@@ -191,7 +204,7 @@ async fn spawn_session(
 
     tokio::spawn(async move {
         run_message_loop(
-            store, send_rx, event_tx, shutdown_rx, &mut ratchet,
+            reader, writer, store, peer_id, send_rx, event_tx, shutdown_rx, ratchet,
         )
         .await;
     });
@@ -204,32 +217,136 @@ async fn spawn_session(
     })
 }
 
-async fn run_message_loop(
-    _store: storage::Store,
-    mut send_rx: mpsc::Receiver<String>,
+async fn run_message_loop<R, W>(
+    reader: R,
+    writer: W,
+    store: storage::Store,
+    peer_id: [u8; 32],
+    send_rx: mpsc::Receiver<String>,
     event_tx: mpsc::Sender<SessionEvent>,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    _ratchet: &mut Ratchet,
-) {
-    // For now, the message loop just waits for shutdown.
-    // In a future iteration, we'll wire up network I/O here.
-    // The handshake has already completed and the reader/writer
-    // streams need to be passed into this function for actual
-    // message exchange.
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ratchet: Ratchet,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send,
+    W: tokio::io::AsyncWrite + Unpin + Send,
+{
+    // Split into explicit halves so we can pass &mut to each future.
+    let mut reader = reader;
+    let mut writer = writer;
+    let mut send_rx = send_rx;
+    let mut shutdown_rx = shutdown_rx;
+    let mut ratchet = ratchet;
+
     loop {
         tokio::select! {
-            Ok(()) = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
+            frame = read_one_frame(&mut reader) => {
+                match frame {
+                    Ok(data) => {
+                        if let Err(e) = handle_incoming(&data, &mut ratchet, &store, peer_id, &event_tx).await {
+                            let _ = event_tx.send(SessionEvent::Error(e.to_string())).await;
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = event_tx.send(SessionEvent::Disconnected).await;
+                        break;
+                    }
+                }
+            }
+            text = send_rx.recv() => {
+                let text = match text {
+                    Some(t) => t,
+                    None => break,
+                };
+                let encrypted = ratchet.encrypt(text.as_bytes());
+                let frame = match encrypted.encode() {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = event_tx.send(SessionEvent::Error(e.to_string())).await;
+                        break;
+                    }
+                };
+                if let Err(e) = writer.write_all(&frame).await {
+                    let _ = event_tx.send(SessionEvent::Error(e.to_string())).await;
+                    break;
+                }
+                store_message(&store, peer_id, &text, true).await;
+            }
+            result = shutdown_rx.changed() => {
+                let do_break = match result {
+                    Ok(()) => *shutdown_rx.borrow_and_update(),
+                    Err(_) => true,
+                };
+                if do_break {
                     break;
                 }
             }
-            Some(_text) = send_rx.recv() => {
-                // TODO: encrypt and send via network writer
-            }
-            else => break,
         }
     }
     let _ = event_tx.send(SessionEvent::Disconnected).await;
+}
+
+async fn read_one_frame<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let mut header = [0u8; 4];
+    reader
+        .read_exact(&mut header)
+        .await
+        .map_err(|e| anyhow!("read frame header: {e}"))?;
+    let len = u32::from_le_bytes(header) as usize;
+    if len > crate::message::MAX_FRAME_SIZE {
+        anyhow::bail!("frame too large: {len} > {}", crate::message::MAX_FRAME_SIZE);
+    }
+    let mut payload = vec![0u8; len];
+    reader
+        .read_exact(&mut payload)
+        .await
+        .map_err(|e| anyhow!("read frame payload: {e}"))?;
+    Ok(payload)
+}
+
+async fn handle_incoming(
+    data: &[u8],
+    ratchet: &mut Ratchet,
+    store: &storage::Store,
+    peer_id: [u8; 32],
+    event_tx: &mpsc::Sender<SessionEvent>,
+) -> Result<()> {
+    let wire_msg = WireMessage::decode(data)?;
+    let plaintext = ratchet.decrypt(&wire_msg)?;
+    let text = String::from_utf8(plaintext)
+        .map_err(|_| anyhow!("decrypted message is not valid UTF-8"))?;
+    let now = Utc::now();
+    store_message(store, peer_id, &text, false).await;
+    event_tx
+        .send(SessionEvent::MessageReceived {
+            text,
+            timestamp: now,
+        })
+        .await
+        .ok();
+    Ok(())
+}
+
+async fn store_message(store: &storage::Store, peer_id: [u8; 32], text: &str, is_outgoing: bool) {
+    let _ = store
+        .save_message(&storage::Message {
+            id: uuid::Uuid::new_v4(),
+            peer_id,
+            direction: if is_outgoing {
+                storage::Direction::Outgoing
+            } else {
+                storage::Direction::Incoming
+            },
+            body: text.to_string(),
+            is_encrypted: true,
+            created_at: Utc::now(),
+            read_at: if is_outgoing { Some(Utc::now()) } else { None },
+        })
+        .await;
 }
 
 // ---------------------------------------------------------------------------
