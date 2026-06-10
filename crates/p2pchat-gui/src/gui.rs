@@ -21,7 +21,7 @@ fn load_icon() -> Option<window::icon::Icon> {
 pub fn run(store: storage::Store) -> Result<(), iced::Error> {
     let icon = load_icon();
     iced::application("P2P Chat", App::update, App::view)
-        .theme(|_| Theme::default())
+        .theme(|_| Theme::Dark)
         .window(window::Settings {
             icon,
             ..window::Settings::default()
