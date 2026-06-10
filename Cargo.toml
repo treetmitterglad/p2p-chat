@@ -40,6 +40,7 @@ qrcode = "0.14"
 
 # GUI
 iced = { version = "0.13", features = ["image", "tokio"] }
+image = "0.25"
 
 # Message protocol
 postcard = "1"

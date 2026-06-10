@@ -4,25 +4,31 @@ use std::time::Duration;
 use iced::widget::{
     button, column, container, row, scrollable, text, text_input, Space,
 };
-use iced::{Alignment, Length, Subscription, Task};
+use iced::{window, Alignment, clipboard, Color, Length, Subscription, Task, Theme};
 use p2pchat_core::{identity, session, storage};
 use p2pchat_core::session::SessionEvent;
 
-/// Type that can be safely shared between async tasks and the GUI.
 type SessionHolder = Arc<Mutex<Option<session::SessionHandle>>>;
 
-/// Launch the iced GUI application. `store` must already be opened.
-pub fn run(
-    store: storage::Store,
-) -> Result<(), iced::Error> {
+fn load_icon() -> Option<window::icon::Icon> {
+    let bytes = include_bytes!("../../../assets/p2pchat-icon.png");
+    let img = image::load_from_memory(bytes).ok()?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    window::icon::from_rgba(rgba.into_raw(), w, h).ok()
+}
+
+pub fn run(store: storage::Store) -> Result<(), iced::Error> {
+    let icon = load_icon();
     iced::application("P2P Chat", App::update, App::view)
+        .theme(|_| Theme::default())
+        .window(window::Settings {
+            icon,
+            ..window::Settings::default()
+        })
         .subscription(App::subscription)
         .run_with(move || App::new(store.clone()))
 }
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
 enum Screen {
@@ -43,18 +49,14 @@ struct App {
     store: storage::Store,
     identity: Option<identity::Identity>,
     screen: Screen,
-    /// Shared session handle (written by connect/listen tasks, read by Tick).
     session: SessionHolder,
     messages: Vec<ChatMessage>,
     input: String,
     passphrase: String,
     ticket_input: String,
+    listening_ticket: Option<String>,
     status: String,
 }
-
-// ---------------------------------------------------------------------------
-// Messages
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -69,11 +71,54 @@ enum Message {
     Connected(SessionHolder),
     Errored(String),
     Tick,
+    CopyId(String),
+    TicketReceived(String),
 }
 
-// ---------------------------------------------------------------------------
-// Implementation
-// ---------------------------------------------------------------------------
+// ── Style helpers ──────────────────────────────────────────────
+
+fn muted_text(s: &str) -> iced::widget::Text<'static, Theme> {
+    text(s.to_string()).style(|theme: &Theme| {
+        let p = theme.extended_palette();
+        text::Style { color: Some(p.background.strong.color) }
+    })
+}
+
+fn card<'a>(content: impl Into<iced::Element<'a, Message>>) -> iced::Element<'a, Message> {
+    container(content)
+        .max_width(480)
+        .padding(32)
+        .style(|theme: &Theme| {
+            let p = theme.extended_palette();
+            container::Style {
+                background: Some(p.background.base.color.into()),
+                border: iced::border::rounded(12).color(p.background.strong.color),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+fn status_bar(text: &str) -> iced::Element<'_, Message> {
+    if text.is_empty() {
+        return container(Space::with_height(Length::Shrink))
+            .height(28)
+            .into();
+    }
+    container(
+        muted_text(text).size(12),
+    )
+    .width(Length::Fill)
+    .padding([4, 12])
+    .style(|theme: &Theme| {
+        let p = theme.extended_palette();
+        container::Style {
+            background: Some(p.background.weak.color.into()),
+            ..container::Style::default()
+        }
+    })
+    .into()
+}
 
 impl App {
     fn new(store: storage::Store) -> (Self, Task<Message>) {
@@ -87,14 +132,11 @@ impl App {
                 input: String::new(),
                 passphrase: String::new(),
                 ticket_input: String::new(),
+                listening_ticket: None,
                 status: String::new(),
             },
             Task::none(),
         )
-    }
-
-    fn title(&self) -> String {
-        "P2P Chat".into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -103,7 +145,6 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            // ── Passphrase / Unlock ──────────────────────────────────
             Message::PassphraseChanged(p) => {
                 self.passphrase = p;
                 Task::none()
@@ -126,12 +167,11 @@ impl App {
             Message::IdentityLoaded(id) => {
                 self.identity = Some(id);
                 self.passphrase.clear();
-                self.status = "ready".into();
+                self.status = String::new();
                 self.screen = Screen::Welcome;
                 Task::none()
             }
 
-            // ── Welcome screen ───────────────────────────────────────
             Message::TicketChanged(t) => {
                 self.ticket_input = t;
                 Task::none()
@@ -168,15 +208,21 @@ impl App {
                 Task::perform(
                     async move {
                         match session::listen_for_peer(store, identity).await {
-                            Ok((_ticket, handle)) => {
+                            Ok((ticket, handle)) => {
                                 *holder.lock().unwrap() = Some(handle);
-                                Message::Connected(holder)
+                                Message::TicketReceived(ticket.to_string())
                             }
                             Err(e) => Message::Errored(e.to_string()),
                         }
                     },
                     |msg| msg,
                 )
+            }
+
+            Message::TicketReceived(ticket) => {
+                self.listening_ticket = Some(ticket);
+                self.status = "waiting for incoming connection...".into();
+                Task::none()
             }
 
             Message::Connected(holder) => {
@@ -193,7 +239,6 @@ impl App {
                 Task::none()
             }
 
-            // ── Chat screen ──────────────────────────────────────────
             Message::InputChanged(t) => {
                 self.input = t;
                 Task::none()
@@ -239,7 +284,10 @@ impl App {
                 }
             }
 
-            // ── Shared ───────────────────────────────────────────────
+            Message::CopyId(id) => {
+                clipboard::write::<Message>(id)
+            }
+
             Message::Errored(e) => {
                 self.status = format!("error: {e}");
                 Task::none()
@@ -250,7 +298,10 @@ impl App {
                 if let Some(ref mut handle) = *guard {
                     loop {
                         match handle.recv_rx.try_recv() {
-                            Ok(SessionEvent::Connected { .. }) => {}
+                            Ok(SessionEvent::Connected { peer_id, .. }) => {
+                                self.status = format!("connected: {}", hex::encode(peer_id));
+                                self.screen = Screen::Chat;
+                            }
                             Ok(SessionEvent::MessageReceived { text, timestamp }) => {
                                 let t = timestamp.format("%H:%M:%S").to_string();
                                 self.messages.push(ChatMessage {
@@ -295,122 +346,263 @@ impl App {
         }
     }
 
-    // ── Unlock screen ─────────────────────────────────────────────
+    // ── Unlock screen ───────────────────────────────────────────
 
     fn view_unlock(&self) -> iced::Element<Message> {
         let pw_input = text_input("identity passphrase", &self.passphrase)
             .on_input(Message::PassphraseChanged)
             .on_submit(Message::UnlockClicked)
             .secure(true)
-            .width(Length::Fill);
+            .padding(10)
+            .size(16);
 
-        let unlock_btn = button("Unlock").on_press(Message::UnlockClicked);
+        let unlock_btn = button(text("Unlock").size(16))
+            .padding([10, 24])
+            .style(button::primary)
+            .on_press(Message::UnlockClicked);
 
-        let controls = column![
-            text("P2P Chat").size(28),
-            Space::with_height(Length::Shrink),
-            text("Enter your passphrase to unlock your identity:").size(14),
+        let content = column![
+            text("P2P Chat").size(32).style(text::primary),
+            muted_text("Enter your passphrase to unlock your identity").size(14),
             row![pw_input, unlock_btn]
-                .spacing(8)
+                .spacing(12)
                 .align_y(Alignment::Center),
         ]
-        .spacing(12)
+        .spacing(20)
         .align_x(Alignment::Center)
         .width(Length::Fill);
 
-        let status_bar = container(text(&self.status))
-            .width(Length::Fill)
-            .padding(8);
-
         column![
-            container(controls)
+            container(card(content))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
                 .center_y(Length::Fill),
-            status_bar,
+            status_bar(&self.status),
         ]
         .into()
     }
 
-    // ── Welcome screen ────────────────────────────────────────────
+    // ── Welcome screen ──────────────────────────────────────────
 
     fn view_welcome(&self) -> iced::Element<Message> {
+        let id = self.identity.as_ref().unwrap();
+        let node_id = hex::encode(id.node_id());
+        let node_id_short = format!("node id: {}…{}", &node_id[..8], &node_id[node_id.len()-8..]);
+
+        let node_id_badge = button(
+            text(node_id_short).size(12),
+        )
+        .padding([4, 10])
+        .style(|theme: &Theme, status: button::Status| {
+            let p = theme.extended_palette();
+            let base = button::Style {
+                background: Some(p.background.weak.color.into()),
+                text_color: p.background.strong.text,
+                border: iced::border::rounded(6),
+                ..button::Style::default()
+            };
+            match status {
+                button::Status::Hovered => button::Style {
+                    background: Some(p.primary.weak.color.into()),
+                    ..base
+                },
+                _ => base,
+            }
+        })
+        .on_press(Message::CopyId(node_id.to_string()));
+
         let ticket_input = text_input("paste peer ticket here...", &self.ticket_input)
             .on_input(Message::TicketChanged)
-            .width(Length::Fill);
+            .padding(10)
+            .size(16);
 
-        let connect_btn = button("Connect").on_press(Message::ConnectClicked);
-        let listen_btn = button("Listen").on_press(Message::ListenClicked);
+        let connect_btn = button(text("Connect").size(16))
+            .padding([10, 20])
+            .style(button::primary)
+            .on_press(Message::ConnectClicked);
 
-        let controls = column![
-            text("P2P Chat").size(28),
-            Space::with_height(Length::Shrink),
-            text("Enter a peer ticket or listen for incoming:").size(14),
-            row![ticket_input, connect_btn]
-                .spacing(8)
+        let listen_btn = button(text("Listen").size(16))
+            .padding([10, 20])
+            .style(button::secondary)
+            .on_press(Message::ListenClicked);
+
+        let mut content = column![
+            text("P2P Chat").size(32).style(text::primary),
+            node_id_badge,
+            muted_text("Enter a ticket or listen for an incoming connection").size(14),
+            ticket_input,
+            row![connect_btn, listen_btn]
+                .spacing(12)
                 .align_y(Alignment::Center),
-            listen_btn,
         ]
-        .spacing(12)
+        .spacing(16)
         .align_x(Alignment::Center)
         .width(Length::Fill);
 
-        let status_bar = container(text(&self.status))
-            .width(Length::Fill)
-            .padding(8);
+        if let Some(ticket) = &self.listening_ticket {
+            let ticket_row = container(
+                column![
+                    muted_text("share this ticket with your peer:").size(12),
+                    row![
+                        muted_text(ticket).size(12),
+                        button(text("copy").size(10))
+                            .padding([2, 8])
+                            .style(button::text)
+                            .on_press(Message::CopyId(ticket.clone())),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                ]
+                .spacing(6),
+            )
+            .padding([10, 14])
+            .style(|theme: &Theme| {
+                let p = theme.extended_palette();
+                container::Style {
+                    background: Some(p.background.weak.color.into()),
+                    border: iced::border::rounded(8),
+                    ..container::Style::default()
+                }
+            })
+            .width(Length::Fill);
+
+            content = content.push(ticket_row);
+        }
 
         column![
-            container(controls)
+            container(card(content))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
                 .center_y(Length::Fill),
-            status_bar,
+            status_bar(&self.status),
         ]
         .into()
     }
 
-    // ── Chat screen ───────────────────────────────────────────────
+    // ── Chat screen ─────────────────────────────────────────────
+
+    fn view_chat_header(&self) -> iced::Element<Message> {
+        let peer_hex = self
+            .session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|h| hex::encode(h.peer_id))
+            .unwrap_or_default();
+
+        let title = text(format!("Connected — {peer_hex}"))
+            .size(14)
+            .style(text::primary);
+
+        container(title)
+            .width(Length::Fill)
+            .padding([8, 12])
+            .style(|theme: &Theme| {
+                let p = theme.extended_palette();
+                container::Style {
+                    background: Some(p.background.weak.color.into()),
+                    ..container::Style::default()
+                }
+            })
+            .into()
+    }
 
     fn view_chat(&self) -> iced::Element<Message> {
-        let mut msg_col = column![].spacing(4).width(Length::Fill);
+        let header = self.view_chat_header();
+
+        let mut msg_col = column![].spacing(6).width(Length::Fill);
         for msg in &self.messages {
-            let prefix = if msg.is_outgoing { "you" } else { "peer" };
-            let label = text(format!(
-                "[{t}] {p}: {m}",
-                t = msg.timestamp,
-                p = prefix,
-                m = msg.text
-            ));
-            msg_col = msg_col.push(container(label).width(Length::Fill).padding(4));
+            let bubble = Self::message_bubble(msg);
+            let spacer = Space::with_width(Length::Fill);
+            let row = if msg.is_outgoing {
+                row![spacer, bubble]
+                    .align_y(Alignment::Start)
+                    .width(Length::Fill)
+            } else {
+                row![bubble, spacer]
+                    .align_y(Alignment::Start)
+                    .width(Length::Fill)
+            };
+            msg_col = msg_col.push(row);
         }
 
         let messages_area = scrollable(
             container(msg_col)
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .padding(8),
+                .padding([12, 16]),
         )
         .height(Length::Fill);
 
         let input = text_input("type a message...", &self.input)
             .on_input(Message::InputChanged)
             .on_submit(Message::SendClicked)
-            .width(Length::Fill);
+            .padding(10)
+            .size(16);
 
-        let send_btn = button("Send").on_press(Message::SendClicked);
+        let send_btn = button(text("Send").size(16))
+            .padding([10, 20])
+            .style(button::primary)
+            .on_press(Message::SendClicked);
 
-        let input_row = row![input, send_btn]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .padding(8)
-            .width(Length::Fill);
+        let input_row = container(
+            row![input, send_btn]
+                .spacing(8)
+                .align_y(Alignment::Center),
+        )
+        .padding([8, 12])
+        .style(|theme: &Theme| {
+            let p = theme.extended_palette();
+            container::Style {
+                border: iced::Border {
+                    width: 1.0,
+                    color: p.background.strong.color,
+                    ..Default::default()
+                },
+                ..container::Style::default()
+            }
+        });
 
-        let status_bar = container(text(&self.status))
-            .width(Length::Fill)
-            .padding(8);
+        column![header, messages_area, input_row].into()
+    }
 
-        column![messages_area, input_row, status_bar].into()
+    fn message_bubble(msg: &ChatMessage) -> iced::Element<'_, Message> {
+        let txt = text(&msg.text).size(14);
+        let ts = text(&msg.timestamp).size(10);
+
+        let (bubble_text, ts_text): (iced::Element<_>, iced::Element<_>) =
+            if msg.is_outgoing {
+                let c = Color::WHITE;
+                (txt.color(c).into(), ts.color(c).into())
+            } else {
+                (txt.into(), ts.style(|theme: &Theme| {
+                    let p = theme.extended_palette();
+                    text::Style { color: Some(p.background.strong.color) }
+                }).into())
+            };
+
+        container(
+            column![bubble_text, ts_text].spacing(2),
+        )
+        .padding([8, 12])
+        .style(move |theme: &Theme| {
+            let p = theme.extended_palette();
+            if msg.is_outgoing {
+                container::Style {
+                    background: Some(p.primary.strong.color.into()),
+                    border: iced::border::rounded(12),
+                    ..container::Style::default()
+                }
+            } else {
+                container::Style {
+                    background: Some(p.background.weak.color.into()),
+                    border: iced::border::rounded(12),
+                    ..container::Style::default()
+                }
+            }
+        })
+        .into()
     }
 }
