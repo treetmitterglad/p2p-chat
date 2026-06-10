@@ -22,3 +22,24 @@ hex = { workspace = true }
 zeroize = { workspace = true }
 secrecy = { workspace = true }
 iroh = { workspace = true }
+
+# Message protocol
+postcard = { workspace = true }
+bytes = { workspace = true }
+
+# Crypto: Noise XX handshake
+snow = { workspace = true }
+
+# Double Ratchet
+hkdf = { workspace = true }
+x25519-dalek = { workspace = true }
+hmac = { workspace = true }
+
+# Storage
+sqlx = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

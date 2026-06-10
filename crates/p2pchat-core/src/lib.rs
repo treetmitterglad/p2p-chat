@@ -26,6 +26,11 @@ pub mod config {
     pub fn identity_path() -> PathBuf {
         config_dir().join("identity.enc")
     }
+
+    /// Path to the chat database.
+    pub fn db_path() -> PathBuf {
+        config_dir().join("chat.db")
+    }
 }
 
 /// Initialize global tracing subscriber. Idempotent.
@@ -43,6 +48,18 @@ pub mod identity;
 
 /// iroh-based transport (QUIC over public relay with NAT traversal).
 pub mod transport;
+
+/// Wire format: length-prefixed frames + message types.
+pub mod message;
+
+/// Noise XX handshake wrapper using the `snow` crate.
+pub mod crypto;
+
+/// Double Ratchet per-message encryption.
+pub mod ratchet;
+
+/// SQLite-backed persistence for messages, contacts, and sessions.
+pub mod storage;
 
 #[cfg(test)]
 mod tests {
