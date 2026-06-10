@@ -1,9 +1,9 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=p2pchat
+Name=P2P Chat
 Comment=Peer-to-peer encrypted chat application
-Exec=p2pchat
+Exec=/usr/local/bin/p2pchat
 Icon=p2pchat
 Terminal=false
 Categories=Network;InstantMessaging;

@@ -106,11 +106,10 @@ async fn run() -> anyhow::Result<()> {
 }
 
 async fn run_gui() -> anyhow::Result<()> {
-    let identity = session::load_identity_interactive().await?;
     let store = storage::Store::open(&config::db_path())
         .await
         .context("open database")?;
-    gui::run(identity, store)
+    gui::run(store)
         .map_err(|e| anyhow::anyhow!("GUI error: {e}"))?;
     Ok(())
 }

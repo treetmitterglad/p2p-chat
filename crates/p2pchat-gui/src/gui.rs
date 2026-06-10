@@ -5,22 +5,19 @@ use iced::widget::{
     button, column, container, row, scrollable, text, text_input, Space,
 };
 use iced::{Alignment, Length, Subscription, Task};
-use p2pchat_core::{
-    identity, session, storage,
-};
+use p2pchat_core::{identity, session, storage};
 use p2pchat_core::session::SessionEvent;
 
 /// Type that can be safely shared between async tasks and the GUI.
 type SessionHolder = Arc<Mutex<Option<session::SessionHandle>>>;
 
-/// Launch the iced GUI application.
+/// Launch the iced GUI application. `store` must already be opened.
 pub fn run(
-    identity: identity::Identity,
     store: storage::Store,
 ) -> Result<(), iced::Error> {
-    iced::application("p2pchat", App::update, App::view)
+    iced::application("P2P Chat", App::update, App::view)
         .subscription(App::subscription)
-        .run_with(move || App::new(identity.clone(), store.clone()))
+        .run_with(move || App::new(store.clone()))
 }
 
 // ---------------------------------------------------------------------------
@@ -29,6 +26,7 @@ pub fn run(
 
 #[derive(Debug, Clone, PartialEq)]
 enum Screen {
+    Unlock,
     Welcome,
     Chat,
 }
@@ -42,23 +40,27 @@ struct ChatMessage {
 
 #[derive(Debug)]
 struct App {
-    identity: identity::Identity,
     store: storage::Store,
+    identity: Option<identity::Identity>,
     screen: Screen,
     /// Shared session handle (written by connect/listen tasks, read by Tick).
     session: SessionHolder,
     messages: Vec<ChatMessage>,
     input: String,
+    passphrase: String,
     ticket_input: String,
     status: String,
 }
 
 // ---------------------------------------------------------------------------
-// Messages — Clone is required by iced's Button → Element conversion.
+// Messages
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 enum Message {
+    PassphraseChanged(String),
+    UnlockClicked,
+    IdentityLoaded(identity::Identity),
     TicketChanged(String),
     ConnectClicked,
     ListenClicked,
@@ -74,18 +76,16 @@ enum Message {
 // ---------------------------------------------------------------------------
 
 impl App {
-    fn new(
-        identity: identity::Identity,
-        store: storage::Store,
-    ) -> (Self, Task<Message>) {
+    fn new(store: storage::Store) -> (Self, Task<Message>) {
         (
             App {
-                identity,
                 store,
-                screen: Screen::Welcome,
+                identity: None,
+                screen: Screen::Unlock,
                 session: Arc::new(Mutex::new(None)),
                 messages: Vec::new(),
                 input: String::new(),
+                passphrase: String::new(),
                 ticket_input: String::new(),
                 status: String::new(),
             },
@@ -94,7 +94,7 @@ impl App {
     }
 
     fn title(&self) -> String {
-        "p2pchat".into()
+        "P2P Chat".into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -103,6 +103,35 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            // ── Passphrase / Unlock ──────────────────────────────────
+            Message::PassphraseChanged(p) => {
+                self.passphrase = p;
+                Task::none()
+            }
+
+            Message::UnlockClicked => {
+                let pw = self.passphrase.clone();
+                self.status = "unlocking...".into();
+                Task::perform(
+                    async move {
+                        match session::load_identity(&pw) {
+                            Ok(id) => Message::IdentityLoaded(id),
+                            Err(e) => Message::Errored(e.to_string()),
+                        }
+                    },
+                    |msg| msg,
+                )
+            }
+
+            Message::IdentityLoaded(id) => {
+                self.identity = Some(id);
+                self.passphrase.clear();
+                self.status = "ready".into();
+                self.screen = Screen::Welcome;
+                Task::none()
+            }
+
+            // ── Welcome screen ───────────────────────────────────────
             Message::TicketChanged(t) => {
                 self.ticket_input = t;
                 Task::none()
@@ -110,12 +139,12 @@ impl App {
 
             Message::ConnectClicked => {
                 let ticket = self.ticket_input.clone();
-                self.status = format!("connecting to {ticket}...");
-                self.ticket_input.clear();
-
-                let identity = self.identity.clone();
+                let identity = self.identity.clone().unwrap();
                 let store = self.store.clone();
                 let holder = self.session.clone();
+
+                self.status = format!("connecting to {ticket}...");
+                self.ticket_input.clear();
                 Task::perform(
                     async move {
                         match session::connect_to_peer(store, identity, &ticket).await {
@@ -131,11 +160,11 @@ impl App {
             }
 
             Message::ListenClicked => {
-                self.status = "listening...".into();
-
-                let identity = self.identity.clone();
+                let identity = self.identity.clone().unwrap();
                 let store = self.store.clone();
                 let holder = self.session.clone();
+
+                self.status = "listening...".into();
                 Task::perform(
                     async move {
                         match session::listen_for_peer(store, identity).await {
@@ -150,6 +179,21 @@ impl App {
                 )
             }
 
+            Message::Connected(holder) => {
+                self.session = holder;
+                let peer_hex = self
+                    .session
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|h| hex::encode(h.peer_id))
+                    .unwrap_or_default();
+                self.status = format!("connected: {peer_hex}");
+                self.screen = Screen::Chat;
+                Task::none()
+            }
+
+            // ── Chat screen ──────────────────────────────────────────
             Message::InputChanged(t) => {
                 self.input = t;
                 Task::none()
@@ -177,8 +221,12 @@ impl App {
                     timestamp: ts,
                 });
 
-                // Extract send_tx from the shared session holder.
-                let send_tx = self.session.lock().unwrap().as_ref().map(|h| h.send_tx.clone());
+                let send_tx = self
+                    .session
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|h| h.send_tx.clone());
                 if let Some(send_tx) = send_tx {
                     Task::perform(
                         async move {
@@ -191,20 +239,7 @@ impl App {
                 }
             }
 
-            Message::Connected(holder) => {
-                self.session = holder;
-                let peer_hex = self
-                    .session
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .map(|h| hex::encode(h.peer_id))
-                    .unwrap_or_default();
-                self.status = format!("connected: {peer_hex}");
-                self.screen = Screen::Chat;
-                Task::none()
-            }
-
+            // ── Shared ───────────────────────────────────────────────
             Message::Errored(e) => {
                 self.status = format!("error: {e}");
                 Task::none()
@@ -215,9 +250,7 @@ impl App {
                 if let Some(ref mut handle) = *guard {
                     loop {
                         match handle.recv_rx.try_recv() {
-                            Ok(SessionEvent::Connected { .. }) => {
-                                // Already handled at connect time.
-                            }
+                            Ok(SessionEvent::Connected { .. }) => {}
                             Ok(SessionEvent::MessageReceived { text, timestamp }) => {
                                 let t = timestamp.format("%H:%M:%S").to_string();
                                 self.messages.push(ChatMessage {
@@ -248,7 +281,6 @@ impl App {
                         }
                     }
                 }
-                // Drop guard before returning to avoid deadlock.
                 drop(guard);
                 Task::none()
             }
@@ -257,10 +289,51 @@ impl App {
 
     fn view(&self) -> iced::Element<Message> {
         match self.screen {
+            Screen::Unlock => self.view_unlock(),
             Screen::Welcome => self.view_welcome(),
             Screen::Chat => self.view_chat(),
         }
     }
+
+    // ── Unlock screen ─────────────────────────────────────────────
+
+    fn view_unlock(&self) -> iced::Element<Message> {
+        let pw_input = text_input("identity passphrase", &self.passphrase)
+            .on_input(Message::PassphraseChanged)
+            .on_submit(Message::UnlockClicked)
+            .secure(true)
+            .width(Length::Fill);
+
+        let unlock_btn = button("Unlock").on_press(Message::UnlockClicked);
+
+        let controls = column![
+            text("P2P Chat").size(28),
+            Space::with_height(Length::Shrink),
+            text("Enter your passphrase to unlock your identity:").size(14),
+            row![pw_input, unlock_btn]
+                .spacing(8)
+                .align_y(Alignment::Center),
+        ]
+        .spacing(12)
+        .align_x(Alignment::Center)
+        .width(Length::Fill);
+
+        let status_bar = container(text(&self.status))
+            .width(Length::Fill)
+            .padding(8);
+
+        column![
+            container(controls)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+            status_bar,
+        ]
+        .into()
+    }
+
+    // ── Welcome screen ────────────────────────────────────────────
 
     fn view_welcome(&self) -> iced::Element<Message> {
         let ticket_input = text_input("paste peer ticket here...", &self.ticket_input)
@@ -271,7 +344,7 @@ impl App {
         let listen_btn = button("Listen").on_press(Message::ListenClicked);
 
         let controls = column![
-            text("p2pchat").size(28),
+            text("P2P Chat").size(28),
             Space::with_height(Length::Shrink),
             text("Enter a peer ticket or listen for incoming:").size(14),
             row![ticket_input, connect_btn]
@@ -297,6 +370,8 @@ impl App {
         ]
         .into()
     }
+
+    // ── Chat screen ───────────────────────────────────────────────
 
     fn view_chat(&self) -> iced::Element<Message> {
         let mut msg_col = column![].spacing(4).width(Length::Fill);
