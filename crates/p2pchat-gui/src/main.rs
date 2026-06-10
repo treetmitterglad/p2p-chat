@@ -18,13 +18,16 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Context;
-use p2pchat_core::{VERSION, config, identity, init_tracing, transport};
+use p2pchat_core::{VERSION, config, identity, init_tracing, session, storage, transport};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+mod gui;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Subcommand {
     Gui,
     Init,
     Doctor,
+    Chat { ticket: Option<String> },
 }
 
 fn parse_subcommand() -> Subcommand {
@@ -32,6 +35,17 @@ fn parse_subcommand() -> Subcommand {
     match args.next().as_deref() {
         Some("init") => Subcommand::Init,
         Some("doctor") => Subcommand::Doctor,
+        Some("chat") => {
+            let sub = args.next();
+            match sub.as_deref() {
+                Some("--listen") | Some("-l") => Subcommand::Chat { ticket: None },
+                Some(t) => Subcommand::Chat { ticket: Some(t.to_string()) },
+                None => {
+                    eprintln!("usage: p2pchat chat <ticket> | p2pchat chat --listen");
+                    std::process::exit(2);
+                }
+            }
+        }
         Some("--help") | Some("-h") => {
             print_help();
             std::process::exit(0);
@@ -56,6 +70,8 @@ fn print_help() {
          Usage:\n  \
            p2pchat                          launch the GUI\n  \
            p2pchat init                     first-run keygen\n  \
+           p2pchat chat <ticket>            CLI chat (connect to peer)\n  \
+           p2pchat chat --listen            CLI chat (listen for peer)\n  \
            p2pchat doctor                   inspect identity file header\n  \
            p2pchat doctor --print-id        bind transport, print node id, exit\n  \
            p2pchat doctor --dial <addr>     connect, send ping, read pong\n  \
@@ -82,16 +98,19 @@ async fn run() -> anyhow::Result<()> {
     tracing::debug!(?cmd, "starting p2pchat");
 
     match cmd {
-        Subcommand::Gui => run_gui_stub(),
+        Subcommand::Gui => run_gui().await,
         Subcommand::Init => run_init(),
         Subcommand::Doctor => parse_doctor_flags().await,
+        Subcommand::Chat { ticket } => run_chat(ticket).await,
     }
 }
 
-fn run_gui_stub() -> anyhow::Result<()> {
-    println!("p2pchat {VERSION}");
-    println!("GUI is not implemented yet (Phase 5 of the implementation plan).");
-    println!("For now, use `p2pchat init` and `p2pchat doctor` from the CLI.");
+async fn run_gui() -> anyhow::Result<()> {
+    let store = storage::Store::open(&config::db_path())
+        .await
+        .context("open database")?;
+    gui::run(store)
+        .map_err(|e| anyhow::anyhow!("GUI error: {e}"))?;
     Ok(())
 }
 
@@ -344,6 +363,25 @@ fn print_qr(payload: &[u8]) -> anyhow::Result<()> {
     }
     for _ in 0..QUIET {
         println!();
+    }
+    Ok(())
+}
+
+async fn run_chat(ticket: Option<String>) -> anyhow::Result<()> {
+    let identity = session::load_identity_interactive().await?;
+    let store = storage::Store::open(&config::db_path())
+        .await
+        .context("open database")?;
+
+    match ticket {
+        Some(t) => {
+            let handle = session::connect_to_peer(store, identity, &t).await?;
+            session::run_cli_chat(handle).await?;
+        }
+        None => {
+            let (_ticket, handle) = session::listen_for_peer(store, identity).await?;
+            session::run_cli_chat(handle).await?;
+        }
     }
     Ok(())
 }

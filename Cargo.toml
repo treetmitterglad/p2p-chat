@@ -16,7 +16,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time", "io-util", "fs", "process"] }
 futures-util = "0.3"
 n0-future = "0.3"
 
@@ -26,6 +26,7 @@ rand_core = "0.6"
 argon2 = "0.5"
 chacha20poly1305 = "0.10"
 sha2 = "0.10"
+hmac = "0.12"
 hex = "0.4"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 secrecy = "0.8"
@@ -36,3 +37,25 @@ iroh = "1.0.0-rc.1"
 # CLI (gui only)
 rpassword = "7"
 qrcode = "0.14"
+
+# GUI
+iced = { version = "0.13", features = ["image", "tokio"] }
+image = "0.25"
+
+# Message protocol
+postcard = "1"
+bytes = "1"
+
+# Crypto: Noise XX handshake
+snow = "0.8"
+
+# Storage
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "json"] }
+
+# Double Ratchet
+hkdf = "0.12"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+# Storage (sqlx uses tokio-rustls for runtime)
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }

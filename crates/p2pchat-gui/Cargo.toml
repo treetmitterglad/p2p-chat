@@ -21,3 +21,5 @@ qrcode = { workspace = true }
 hex = { workspace = true }
 tokio = { workspace = true }
 futures-util = { workspace = true }
+iced = { workspace = true }
+image = { workspace = true }
