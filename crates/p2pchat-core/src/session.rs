@@ -113,7 +113,7 @@ pub async fn connect_to_peer(
     )
     .await?;
 
-    spawn_session(store, identity, result, peer_id, reader, writer).await
+    spawn_session(store, identity, result, peer_id, reader, writer, transport).await
 }
 
 /// Listen for an incoming connection as responder.
@@ -152,7 +152,7 @@ pub async fn listen_for_peer(
     )
     .await?;
 
-    spawn_session(store, identity, result, peer_id, reader, writer)
+    spawn_session(store, identity, result, peer_id, reader, writer, transport)
         .await
         .map(|handle| (ticket_str, handle))
 }
@@ -168,6 +168,7 @@ async fn spawn_session<R, W>(
     peer_id: [u8; 32],
     reader: R,
     writer: W,
+    transport: Transport,
 ) -> Result<SessionHandle>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -214,6 +215,7 @@ where
             reader, writer, store, peer_id, send_rx, event_tx, shutdown_rx, ratchet,
         )
         .await;
+        transport.close().await;
     });
 
     Ok(SessionHandle {
