@@ -42,8 +42,11 @@ impl std::fmt::Debug for Transport {
 }
 
 impl Transport {
-    /// Bind a new transport with a random secret key. Connects to the default
-    /// relay. Takes a few seconds while the relay handshake completes.
+    /// Bind a new transport with a random secret key.
+    ///
+    /// Connects to the public relay. Waiting for relay connectivity
+    /// is optional — use [`ensure_online`](Self::ensure_online) when
+    /// you need the endpoint address to include relay URLs.
     pub async fn bind() -> Result<Self> {
         let endpoint = Endpoint::builder(presets::N0)
             .alpns(vec![ALPN.to_vec()])
@@ -66,6 +69,13 @@ impl Transport {
         Ok(Self { endpoint })
     }
 
+    /// Wait until the endpoint has contacted a relay server and is dialable
+    /// from the internet. Call this before generating a ticket to ensure the
+    /// address includes relay URLs.
+    pub async fn ensure_online(&self) {
+        self.endpoint.online().await;
+    }
+
     /// Borrow the underlying iroh endpoint (for advanced uses).
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
@@ -81,9 +91,19 @@ impl Transport {
         self.node_id().to_string()
     }
 
-    /// Construct a shareable address for this endpoint using the default n0 relay.
+    /// Construct a shareable address for this endpoint.
+    ///
+    /// If the endpoint has not yet contacted a relay (e.g. if
+    /// [`ensure_online`](Self::ensure_online) was not called), the
+    /// ticket will fall back to the hard-coded default relay URL.
     pub fn ticket(&self) -> Ticket {
-        Ticket::from_addr(self.endpoint.addr())
+        let addr = self.endpoint.addr();
+        // If the addr has no relay URLs yet, attach the default relay
+        // so the ticket always contains routable information.
+        if addr.relay_urls().next().is_none() {
+            return Ticket::from_addr(addr.with_relay_url(default_relay_url()));
+        }
+        Ticket::from_addr(addr)
     }
 
     /// Connect to a peer by [`EndpointAddr`]. Negotiates ALPN [`ALPN`].

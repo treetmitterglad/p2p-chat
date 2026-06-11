@@ -121,6 +121,7 @@ pub async fn listen_for_peer(
     let transport = Transport::bind()
         .await
         .context("bind transport")?;
+    transport.ensure_online().await;
 
     let ticket = transport.ticket().to_string();
     eprintln!("waiting for incoming connection...");
