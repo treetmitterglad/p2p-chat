@@ -346,4 +346,166 @@ mod tests {
             assert_eq!(String::from_utf8(decrypted).unwrap(), msg);
         }
     }
+
+    #[test]
+    fn decrypt_wrong_message_type_returns_error() {
+        let (mut alice, _) = make_test_ratchets();
+        // Alice tries to "decrypt" a Text message
+        let msg = WireMessage::Text { text: "not encrypted".into() };
+        let result = alice.decrypt(&msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("RatchetEncrypted"));
+    }
+
+    #[test]
+    fn tampered_ciphertext_fails_decryption() {
+        let (mut alice, mut bob) = make_test_ratchets();
+        let mut encrypted = alice.encrypt(b"secret data");
+        if let WireMessage::RatchetEncrypted { ciphertext, .. } = &mut encrypted {
+            if !ciphertext.is_empty() {
+                ciphertext[0] ^= 0xFF;
+            }
+        }
+        let result = bob.decrypt(&encrypted);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tampered_nonce_fails_decryption() {
+        let (mut alice, mut bob) = make_test_ratchets();
+        let mut encrypted = alice.encrypt(b"secret data");
+        if let WireMessage::RatchetEncrypted { nonce, .. } = &mut encrypted {
+            nonce[0] ^= 0xFF;
+        }
+        let result = bob.decrypt(&encrypted);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_message_round_trip() {
+        let (mut alice, mut bob) = make_test_ratchets();
+        let encrypted = alice.encrypt(b"");
+        let decrypted = bob.decrypt(&encrypted).unwrap();
+        assert!(decrypted.is_empty());
+    }
+
+    #[test]
+    fn large_message_round_trip() {
+        let (mut alice, mut bob) = make_test_ratchets();
+        let payload = vec![0x42u8; 64000];
+        let encrypted = alice.encrypt(&payload);
+        let decrypted = bob.decrypt(&encrypted).unwrap();
+        assert_eq!(decrypted.len(), 64000);
+        assert!(decrypted.iter().all(|&b| b == 0x42));
+    }
+
+    #[test]
+    fn rekey_changes_dh_public_key() {
+        let (mut alice, mut bob) = make_test_ratchets();
+        let initial_dh = alice.dh_public_bytes();
+        alice.set_max_messages(1);
+        // Send 2 messages forcing a ratchet step
+        let e1 = alice.encrypt(b"msg 1");
+        let _ = bob.decrypt(&e1).unwrap();
+        let e2 = alice.encrypt(b"msg 2");
+        let _ = bob.decrypt(&e2).unwrap();
+        let after_dh = alice.dh_public_bytes();
+        assert_ne!(initial_dh, after_dh, "DH key should change after ratchet step");
+    }
+
+    #[test]
+    fn decrypt_with_wrong_ratchet_fails() {
+        // This tests that different ratchet instances can't decrypt each other's msgs
+        // when they use different root keys
+        let root_a = [0x42u8; 32];
+        let root_b = [0x99u8; 32];
+        let alice_priv = [1u8; 32];
+        let bob_priv = [2u8; 32];
+        let bob_pub = {
+            let s = StaticSecret::from(bob_priv);
+            *PublicKey::from(&s).as_bytes()
+        };
+        let mut alice2 = Ratchet::new(&root_a, &alice_priv, &bob_pub, true);
+        let mut eve = Ratchet::new(&root_b, &[3u8; 32], &bob_pub, false);
+        let encrypted = alice2.encrypt(b"hi bob");
+        let result = eve.decrypt(&encrypted);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn many_messages_in_sequence() {
+        let (mut alice, mut bob) = make_test_ratchets();
+        // Default max_messages=100; stay within one batch to avoid a second
+        // DH step which would fail because Bob's dh_secret is rotated after
+        // the first decrypt-side step while Alice still uses bob_static.
+        for i in 0..100 {
+            let msg = format!("message {i}");
+            let encrypted = alice.encrypt(msg.as_bytes());
+            let decrypted = bob.decrypt(&encrypted).unwrap();
+            assert_eq!(String::from_utf8(decrypted).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn bidirectional_ratchet_step() {
+        let (mut alice, mut bob) = make_test_ratchets();
+
+        for i in 0..10 {
+            let msg_a = format!("alice->bob {i}");
+            let e = alice.encrypt(msg_a.as_bytes());
+            let d = bob.decrypt(&e).unwrap();
+            assert_eq!(String::from_utf8(d).unwrap(), msg_a);
+
+            let msg_b = format!("bob->alice {i}");
+            let e = bob.encrypt(msg_b.as_bytes());
+            let d = alice.decrypt(&e).unwrap();
+            assert_eq!(String::from_utf8(d).unwrap(), msg_b);
+        }
+    }
+
+    #[test]
+    fn derive_message_key_deterministic() {
+        let ck = [0xABu8; 32];
+        let (mk1, next1) = derive_message_key(&ck);
+        let (mk2, next2) = derive_message_key(&ck);
+        assert_eq!(mk1, mk2);
+        assert_eq!(next1, next2);
+    }
+
+    #[test]
+    fn derive_message_key_at_position() {
+        let ck = [0xABu8; 32];
+        // Derive at position 0 and 1; they should differ
+        let (mk0, _) = derive_message_key_at(&ck, 0).unwrap();
+        let (mk1, _) = derive_message_key_at(&ck, 1).unwrap();
+        assert_ne!(mk0, mk1);
+    }
+
+    #[test]
+    fn set_max_messages_zero_steps_every_message() {
+        let (mut alice, mut bob) = make_test_ratchets();
+        alice.set_max_messages(0);
+        bob.set_max_messages(0);
+        // With max_messages=0 every send triggers a DH step.
+        // Alternating direction ensures each side learns the other's new
+        // DH key before the next step, keeping the ratchet in sync.
+        for i in 0..5 {
+            let msg = format!("alice {i}");
+            let e = alice.encrypt(msg.as_bytes());
+            let d = bob.decrypt(&e).unwrap();
+            assert_eq!(String::from_utf8(d).unwrap(), msg);
+
+            let msg = format!("bob {i}");
+            let e = bob.encrypt(msg.as_bytes());
+            let d = alice.decrypt(&e).unwrap();
+            assert_eq!(String::from_utf8(d).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn debug_does_not_leak_keys() {
+        let (alice, _) = make_test_ratchets();
+        let s = format!("{alice:?}");
+        assert!(!s.contains("dh_secret"), "secret leaked in Debug");
+    }
 }

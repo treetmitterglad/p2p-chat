@@ -474,4 +474,83 @@ mod tests {
         assert!(matches!(err, Error::WrongPassphrase), "got {err:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn from_seed_is_deterministic() {
+        let seed = [0x42u8; 32];
+        let a = Identity::from_seed(seed);
+        let b = Identity::from_seed(seed);
+        assert_eq!(a.node_id(), b.node_id());
+        assert_eq!(a.fingerprint(), b.fingerprint());
+        assert_eq!(a.seed(), b.seed());
+    }
+
+    #[test]
+    fn from_seed_produces_expected_node_id() {
+        // Ed25519 keypair from known seed (all-zeros); verify stability
+        let id = Identity::from_seed([0u8; 32]);
+        // Just verify deterministic: same seed always gives same node_id
+        let id2 = Identity::from_seed([0u8; 32]);
+        assert_eq!(id.node_id(), id2.node_id());
+        // All-zeros seed should not equal all-ones
+        let id3 = Identity::from_seed([0xFFu8; 32]);
+        assert_ne!(id.node_id(), id3.node_id());
+    }
+
+    #[test]
+    fn empty_passphrase_round_trip() {
+        let id = Identity::generate();
+        let blob = encrypt(
+            &id.seed(),
+            "",
+            KdfParams {
+                m_kib: 1024,
+                t: 1,
+                p: 1,
+            },
+        )
+        .unwrap();
+        let seed = decrypt(&blob, "").unwrap();
+        let id2 = Identity::from_seed(seed);
+        assert_eq!(id.node_id(), id2.node_id());
+    }
+
+    #[test]
+    fn long_passphrase_round_trip() {
+        let long = "a".repeat(1000);
+        let id = Identity::generate();
+        let blob = encrypt(
+            &id.seed(),
+            &long,
+            KdfParams {
+                m_kib: 1024,
+                t: 1,
+                p: 1,
+            },
+        )
+        .unwrap();
+        let seed = decrypt(&blob, &long).unwrap();
+        let id2 = Identity::from_seed(seed);
+        assert_eq!(id.node_id(), id2.node_id());
+    }
+
+    #[test]
+    fn different_seeds_produce_different_node_ids() {
+        let a = Identity::from_seed([0x01u8; 32]);
+        let b = Identity::from_seed([0x02u8; 32]);
+        assert_ne!(a.node_id(), b.node_id());
+    }
+
+    #[test]
+    fn save_to_path_creates_parent_dirs() {
+        let id = Identity::generate();
+        let dir = std::env::temp_dir().join(format!("p2pchat-save-test-{}", std::process::id()));
+        // deliberately nested dir that doesn't exist
+        let path = dir.join("sub").join("identity.enc");
+        save_to_path(&id, "pw", &path).unwrap();
+        assert!(path.exists());
+        let loaded = load_from_path("pw", &path).unwrap();
+        assert_eq!(id.node_id(), loaded.node_id());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

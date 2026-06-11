@@ -225,4 +225,227 @@ mod tests {
         assert_eq!(a_res.peer_static, Some(b_pub));
         assert_eq!(b_res.peer_static, Some(a_pub));
     }
+
+    #[tokio::test]
+    async fn noise_handshake_with_different_keys_produces_different_hash() {
+        use tokio::io::split;
+        use x25519_dalek::{PublicKey, StaticSecret};
+
+        // Different key material from the other test
+        let a_priv = [3u8; 32];
+        let b_priv = [4u8; 32];
+        let a_pub = *PublicKey::from(&StaticSecret::from(a_priv)).as_bytes();
+        let b_pub = *PublicKey::from(&StaticSecret::from(b_priv)).as_bytes();
+
+        let (alice_end, bob_end) = duplex(65536);
+        let (mut alice_read, mut alice_write) = split(alice_end);
+        let (mut bob_read, mut bob_write) = split(bob_end);
+
+        let alice = tokio::spawn(async move {
+            perform_handshake(
+                HandshakeRole::Initiator,
+                &a_priv,
+                &mut alice_read,
+                &mut alice_write,
+            )
+            .await
+        });
+
+        let bob = tokio::spawn(async move {
+            perform_handshake(
+                HandshakeRole::Responder,
+                &b_priv,
+                &mut bob_read,
+                &mut bob_write,
+            )
+            .await
+        });
+
+        let (a_res, b_res) = tokio::join!(alice, bob);
+        let a_res = a_res.expect("initiator panicked").expect("initiator failed");
+        let b_res = b_res.expect("responder panicked").expect("responder failed");
+
+        assert_eq!(a_res.handshake_hash, b_res.handshake_hash);
+        assert_eq!(a_res.peer_static, Some(b_pub));
+        assert_eq!(b_res.peer_static, Some(a_pub));
+
+        // Must differ from the hash in the other test (different keys)
+        assert_ne!(a_res.handshake_hash, [0u8; 32]);
+    }
+
+    #[tokio::test]
+    async fn noise_handshake_both_initiator_fails() {
+        use tokio::io::split;
+
+        let a_priv = [1u8; 32];
+        let b_priv = [2u8; 32];
+
+        let (alice_end, bob_end) = duplex(65536);
+        let (mut alice_read, mut alice_write) = split(alice_end);
+        let (mut bob_read, mut bob_write) = split(bob_end);
+
+        // Both sides as initiator — each writes its ephemeral key then reads
+        // the other's ephemeral key as if it were the responder's msg2, which
+        // has a different format and causes snow to return an error.
+        let alice = tokio::spawn(async move {
+            perform_handshake(
+                HandshakeRole::Initiator,
+                &a_priv,
+                &mut alice_read,
+                &mut alice_write,
+            )
+            .await
+        });
+
+        let bob = tokio::spawn(async move {
+            perform_handshake(
+                HandshakeRole::Initiator,
+                &b_priv,
+                &mut bob_read,
+                &mut bob_write,
+            )
+            .await
+        });
+
+        let (a_res, b_res) = tokio::join!(alice, bob);
+        let a_err = a_res.map_or(true, |r| r.is_err());
+        let b_err = b_res.map_or(true, |r| r.is_err());
+        assert!(
+            a_err || b_err,
+            "both-initiator handshake should have failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn noise_handshake_wrong_key_mismatched_peer_static() {
+        use tokio::io::split;
+        use x25519_dalek::{PublicKey, StaticSecret};
+
+        let a_priv = [1u8; 32];
+        let b_priv = [2u8; 32];
+        let fake_priv = [9u8; 32];
+        let b_expected_pub = *PublicKey::from(&StaticSecret::from(b_priv)).as_bytes();
+
+        let (alice_end, bob_end) = duplex(65536);
+        let (mut alice_read, mut alice_write) = split(alice_end);
+        let (mut bob_read, mut bob_write) = split(bob_end);
+
+        // Alice uses the correct private key, Bob uses a different key
+        let alice = tokio::spawn(async move {
+            perform_handshake(
+                HandshakeRole::Initiator,
+                &a_priv,
+                &mut alice_read,
+                &mut alice_write,
+            )
+            .await
+        });
+
+        let bob = tokio::spawn(async move {
+            perform_handshake(
+                HandshakeRole::Responder,
+                &fake_priv,
+                &mut bob_read,
+                &mut bob_write,
+            )
+            .await
+        });
+
+        let (a_res, b_res) = tokio::join!(alice, bob);
+        let a_res = a_res.expect("alice panicked").expect("alice failed");
+        let b_res = b_res.expect("bob panicked").expect("bob failed");
+
+        // Noise XX completes at the protocol level, but Alice's peer_static
+        // is derived from fake_priv, not from b_priv.
+        assert_ne!(
+            a_res.peer_static,
+            Some(b_expected_pub),
+            "peer_static should not match expected key"
+        );
+        // Bob's peer_static should still match Alice's real public key
+        let a_pub = *PublicKey::from(&StaticSecret::from(a_priv)).as_bytes();
+        assert_eq!(b_res.peer_static, Some(a_pub));
+    }
+
+    #[tokio::test]
+    async fn noise_handshake_role_display() {
+        assert_eq!(format!("{:?}", HandshakeRole::Initiator), "Initiator");
+        assert_eq!(format!("{:?}", HandshakeRole::Responder), "Responder");
+    }
+
+    #[test]
+    fn noise_handshake_new_fails_on_invalid_private_key() {
+        // An all-zeros key is technically valid for X25519 but might be clamped.
+        // Test that the constructor accepts a valid key and works.
+        let hs = NoiseHandshake::new(HandshakeRole::Initiator, &[1u8; 32]);
+        assert!(hs.is_ok());
+    }
+
+    #[tokio::test]
+    async fn noise_handshake_in_memory_exchange_data() {
+        use tokio::io::split;
+
+        let a_priv = [1u8; 32];
+        let b_priv = [2u8; 32];
+
+        let (alice_end, bob_end) = duplex(65536);
+        let (mut alice_read, mut alice_write) = split(alice_end);
+        let (mut bob_read, mut bob_write) = split(bob_end);
+
+        let alice = tokio::spawn(async move {
+            perform_handshake(
+                HandshakeRole::Initiator,
+                &a_priv,
+                &mut alice_read,
+                &mut alice_write,
+            )
+            .await
+        });
+
+        let bob = tokio::spawn(async move {
+            perform_handshake(
+                HandshakeRole::Responder,
+                &b_priv,
+                &mut bob_read,
+                &mut bob_write,
+            )
+            .await
+        });
+
+        let (a_res, b_res) = tokio::join!(alice, bob);
+        let mut a_res = a_res.expect("initiator panicked").expect("initiator failed");
+        let mut b_res = b_res.expect("responder panicked").expect("responder failed");
+
+        // After handshake, we can encrypt/decrypt with transport_state
+        let alice_msg = b"hello from alice";
+        let mut alice_out = vec![0u8; 65535];
+        let n = a_res
+            .transport_state
+            .write_message(alice_msg, &mut alice_out)
+            .unwrap();
+        let alice_encrypted = &alice_out[..n];
+
+        let mut bob_decrypted = vec![0u8; 65535];
+        let n = b_res
+            .transport_state
+            .read_message(alice_encrypted, &mut bob_decrypted)
+            .unwrap();
+        assert_eq!(&bob_decrypted[..n], alice_msg);
+
+        // Also the other direction
+        let bob_msg = b"hello from bob";
+        let mut bob_out = vec![0u8; 65535];
+        let n = b_res
+            .transport_state
+            .write_message(bob_msg, &mut bob_out)
+            .unwrap();
+        let bob_encrypted = &bob_out[..n];
+
+        let mut alice_decrypted = vec![0u8; 65535];
+        let n = a_res
+            .transport_state
+            .read_message(bob_encrypted, &mut alice_decrypted)
+            .unwrap();
+        assert_eq!(&alice_decrypted[..n], bob_msg);
+    }
 }

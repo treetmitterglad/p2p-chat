@@ -450,3 +450,116 @@ pub async fn run_cli_chat(mut handle: SessionHandle) -> Result<()> {
     handle.close().await;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_is_32_hex_chars() {
+        let key = [0x42u8; 32];
+        let fp = fingerprint(&key);
+        assert_eq!(fp.len(), 32);
+        assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn fingerprint_is_deterministic() {
+        let key = [0xABu8; 32];
+        assert_eq!(fingerprint(&key), fingerprint(&key));
+    }
+
+    #[test]
+    fn fingerprint_differs_for_different_keys() {
+        let a = fingerprint(&[0x01u8; 32]);
+        let b = fingerprint(&[0x02u8; 32]);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn fingerprint_matches_known_value() {
+        let key = [0x00u8; 32];
+        // SHA-256 of [0; 32] truncated to first 16 bytes
+        let hash = sha2::Sha256::digest(&key);
+        let expected = hex::encode(&hash[..16]);
+        assert_eq!(fingerprint(&key), expected);
+    }
+
+    #[test]
+    fn session_handle_drop_sends_shutdown() {
+        let (send_tx, _recv_rx) = mpsc::channel::<String>(64);
+        let (_event_tx, recv_rx) = mpsc::channel::<SessionEvent>(64);
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+        {
+            let _handle = SessionHandle {
+                send_tx,
+                recv_rx,
+                shutdown_tx: Some(shutdown_tx),
+                peer_id: [0u8; 32],
+            };
+            // handle dropped here
+        }
+
+        // shutdown should have been triggered
+        assert!(*shutdown_rx.borrow_and_update());
+    }
+
+    #[test]
+    fn session_handle_peer_id_hex() {
+        let (send_tx, _recv_rx) = mpsc::channel::<String>(64);
+        let (_event_tx, recv_rx) = mpsc::channel::<SessionEvent>(64);
+        let peer_id = [0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04,
+                       0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+                       0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14,
+                       0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C];
+        let handle = SessionHandle {
+            send_tx,
+            recv_rx,
+            shutdown_tx: None,
+            peer_id,
+        };
+        assert_eq!(handle.peer_id_hex(), hex::encode(peer_id));
+    }
+
+    #[tokio::test]
+    async fn session_handle_close_sends_shutdown() {
+        let (send_tx, _recv_rx) = mpsc::channel::<String>(64);
+        let (_event_tx, recv_rx) = mpsc::channel::<SessionEvent>(64);
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = SessionHandle {
+            send_tx,
+            recv_rx,
+            shutdown_tx: Some(shutdown_tx),
+            peer_id: [0u8; 32],
+        };
+
+        handle.close().await;
+        assert!(*shutdown_rx.borrow_and_update());
+    }
+
+    #[tokio::test]
+    async fn send_and_receive_session_events() {
+        let (_send_tx, _send_rx) = mpsc::channel::<String>(64);
+        let (event_tx, mut recv_rx) = mpsc::channel::<SessionEvent>(64);
+        let (_shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+
+        event_tx
+            .send(SessionEvent::Connected {
+                peer_id: [1u8; 32],
+                fingerprint: "abcd".into(),
+            })
+            .await
+            .unwrap();
+
+        let event = recv_rx.recv().await.unwrap();
+        match event {
+            SessionEvent::Connected { peer_id, fingerprint } => {
+                assert_eq!(peer_id, [1u8; 32]);
+                assert_eq!(fingerprint, "abcd");
+            }
+            _ => panic!("expected Connected event"),
+        }
+    }
+}

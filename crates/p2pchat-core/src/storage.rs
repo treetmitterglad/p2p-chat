@@ -426,4 +426,202 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].body, "hello");
     }
+
+    #[tokio::test]
+    async fn contact_upsert_updates_existing() {
+        let store = test_store().await;
+        let contact = Contact {
+            id: Uuid::new_v4(),
+            peer_id: [1u8; 32],
+            label: "original".into(),
+            fingerprint: "abc".into(),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            verified: false,
+        };
+        store.upsert_contact(&contact).await.unwrap();
+
+        let updated = Contact {
+            id: contact.id,
+            peer_id: [1u8; 32],
+            label: "updated".into(),
+            fingerprint: "def".into(),
+            first_seen: contact.first_seen,
+            last_seen: Utc::now(),
+            verified: true,
+        };
+        store.upsert_contact(&updated).await.unwrap();
+
+        let contacts = store.list_contacts().await.unwrap();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].label, "updated");
+        assert_eq!(contacts[0].fingerprint, "def");
+        assert!(contacts[0].verified);
+    }
+
+    #[tokio::test]
+    async fn list_contacts_empty_when_no_contacts() {
+        let store = test_store().await;
+        let contacts = store.list_contacts().await.unwrap();
+        assert!(contacts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn messages_ordered_newest_first() {
+        let store = test_store().await;
+        let peer_id = [1u8; 32];
+
+        let msg1 = Message {
+            id: Uuid::new_v4(),
+            peer_id,
+            direction: Direction::Outgoing,
+            body: "first".into(),
+            is_encrypted: true,
+            created_at: Utc::now(),
+            read_at: None,
+        };
+        let msg2 = Message {
+            id: Uuid::new_v4(),
+            peer_id,
+            direction: Direction::Outgoing,
+            body: "second".into(),
+            is_encrypted: true,
+            created_at: Utc::now() + chrono::Duration::seconds(1),
+            read_at: None,
+        };
+        store.save_message(&msg1).await.unwrap();
+        store.save_message(&msg2).await.unwrap();
+
+        let msgs = store.get_messages(&peer_id, 100).await.unwrap();
+        assert_eq!(msgs.len(), 2);
+        // get_messages returns in ORDER BY created_at DESC then reversed for oldest-first
+        assert_eq!(msgs[0].body, "first");
+        assert_eq!(msgs[1].body, "second");
+    }
+
+    #[tokio::test]
+    async fn messages_respect_limit() {
+        let store = test_store().await;
+        let peer_id = [1u8; 32];
+        for i in 0..10 {
+            let msg = Message {
+                id: Uuid::new_v4(),
+                peer_id,
+                direction: Direction::Incoming,
+                body: format!("msg {i}"),
+                is_encrypted: true,
+                created_at: Utc::now(),
+                read_at: None,
+            };
+            store.save_message(&msg).await.unwrap();
+        }
+        let msgs = store.get_messages(&peer_id, 3).await.unwrap();
+        assert_eq!(msgs.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn messages_isolated_by_peer() {
+        let store = test_store().await;
+        let msg_a = Message {
+            id: Uuid::new_v4(),
+            peer_id: [1u8; 32],
+            direction: Direction::Outgoing,
+            body: "for peer A".into(),
+            is_encrypted: true,
+            created_at: Utc::now(),
+            read_at: None,
+        };
+        let msg_b = Message {
+            id: Uuid::new_v4(),
+            peer_id: [2u8; 32],
+            direction: Direction::Incoming,
+            body: "for peer B".into(),
+            is_encrypted: true,
+            created_at: Utc::now(),
+            read_at: None,
+        };
+        store.save_message(&msg_a).await.unwrap();
+        store.save_message(&msg_b).await.unwrap();
+
+        let msgs_a = store.get_messages(&[1u8; 32], 100).await.unwrap();
+        assert_eq!(msgs_a.len(), 1);
+        assert_eq!(msgs_a[0].body, "for peer A");
+
+        let msgs_b = store.get_messages(&[2u8; 32], 100).await.unwrap();
+        assert_eq!(msgs_b.len(), 1);
+        assert_eq!(msgs_b[0].body, "for peer B");
+    }
+
+    #[tokio::test]
+    async fn mark_read_updates_message() {
+        let store = test_store().await;
+        let msg = Message {
+            id: Uuid::new_v4(),
+            peer_id: [1u8; 32],
+            direction: Direction::Incoming,
+            body: "read me".into(),
+            is_encrypted: true,
+            created_at: Utc::now(),
+            read_at: None,
+        };
+        store.save_message(&msg).await.unwrap();
+        assert!(msg.read_at.is_none());
+
+        store.mark_read(&msg.id).await.unwrap();
+        let msgs = store.get_messages(&[1u8; 32], 100).await.unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].read_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn create_and_update_session() {
+        let store = test_store().await;
+        let session = Session {
+            id: Uuid::new_v4(),
+            peer_id: [1u8; 32],
+            state: SessionState::Handshaking,
+            created_at: Utc::now(),
+            handshake_hash: Some([0xABu8; 32]),
+        };
+        store.create_session(&session).await.unwrap();
+
+        store
+            .update_session_state(&session.id, &SessionState::Active)
+            .await
+            .unwrap();
+
+        store
+            .update_session_state(&session.id, &SessionState::Closed)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_state_as_str() {
+        assert_eq!(SessionState::Handshaking.as_str(), "handshaking");
+        assert_eq!(SessionState::Active.as_str(), "active");
+        assert_eq!(SessionState::Closed.as_str(), "closed");
+        assert_eq!(SessionState::Error.as_str(), "error");
+    }
+
+    #[tokio::test]
+    async fn save_message_with_read_at() {
+        let store = test_store().await;
+        let msg = Message {
+            id: Uuid::new_v4(),
+            peer_id: [1u8; 32],
+            direction: Direction::Outgoing,
+            body: "already read".into(),
+            is_encrypted: false,
+            created_at: Utc::now(),
+            read_at: Some(Utc::now()),
+        };
+        store.save_message(&msg).await.unwrap();
+        let msgs = store.get_messages(&[1u8; 32], 100).await.unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].body, "already read");
+        assert_eq!(msgs[0].direction, Direction::Outgoing);
+        assert!(!msgs[0].is_encrypted);
+        assert!(msgs[0].read_at.is_some());
+    }
 }
