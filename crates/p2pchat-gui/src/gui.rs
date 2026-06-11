@@ -5,7 +5,7 @@ use iced::widget::{
     button, column, container, row, scrollable, text, text_input, Space,
 };
 use iced::{window, Alignment, clipboard, Color, Length, Subscription, Task, Theme};
-use p2pchat_core::{identity, session, storage};
+use p2pchat_core::{config, identity, session, storage};
 use p2pchat_core::session::SessionEvent;
 
 type SessionHolder = Arc<Mutex<Option<session::SessionHandle>>>;
@@ -32,6 +32,7 @@ pub fn run(store: storage::Store) -> Result<(), iced::Error> {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Screen {
+    CreateIdentity,
     Unlock,
     Welcome,
     Chat,
@@ -53,6 +54,7 @@ struct App {
     messages: Vec<ChatMessage>,
     input: String,
     passphrase: String,
+    passphrase_confirm: String,
     ticket_input: String,
     listening_ticket: Option<String>,
     status: String,
@@ -61,7 +63,9 @@ struct App {
 #[derive(Debug, Clone)]
 enum Message {
     PassphraseChanged(String),
+    PassphraseConfirmChanged(String),
     UnlockClicked,
+    CreateClicked,
     IdentityLoaded(identity::Identity),
     TicketChanged(String),
     ConnectClicked,
@@ -122,15 +126,21 @@ fn status_bar(text: &str) -> iced::Element<'_, Message> {
 
 impl App {
     fn new(store: storage::Store) -> (Self, Task<Message>) {
+        let screen = if config::identity_path().exists() {
+            Screen::Unlock
+        } else {
+            Screen::CreateIdentity
+        };
         (
             App {
                 store,
                 identity: None,
-                screen: Screen::Unlock,
+                screen,
                 session: Arc::new(Mutex::new(None)),
                 messages: Vec::new(),
                 input: String::new(),
                 passphrase: String::new(),
+                passphrase_confirm: String::new(),
                 ticket_input: String::new(),
                 listening_ticket: None,
                 status: String::new(),
@@ -150,6 +160,35 @@ impl App {
                 Task::none()
             }
 
+            Message::PassphraseConfirmChanged(p) => {
+                self.passphrase_confirm = p;
+                Task::none()
+            }
+
+            Message::CreateClicked => {
+                let pw = self.passphrase.clone();
+                let confirm = self.passphrase_confirm.clone();
+                if pw.is_empty() {
+                    self.status = "passphrase must not be empty".into();
+                    return Task::none();
+                }
+                if pw != confirm {
+                    self.status = "passphrases do not match".into();
+                    return Task::none();
+                }
+                self.status = "creating identity...".into();
+                Task::perform(
+                    async move {
+                        let id = identity::Identity::generate();
+                        match identity::save_to_path(&id, &pw, &config::identity_path()) {
+                            Ok(()) => Message::IdentityLoaded(id),
+                            Err(e) => Message::Errored(e.to_string()),
+                        }
+                    },
+                    |msg| msg,
+                )
+            }
+
             Message::UnlockClicked => {
                 let pw = self.passphrase.clone();
                 self.status = "unlocking...".into();
@@ -167,6 +206,7 @@ impl App {
             Message::IdentityLoaded(id) => {
                 self.identity = Some(id);
                 self.passphrase.clear();
+                self.passphrase_confirm.clear();
                 self.status = String::new();
                 self.screen = Screen::Welcome;
                 Task::none()
@@ -340,10 +380,54 @@ impl App {
 
     fn view(&self) -> iced::Element<Message> {
         match self.screen {
+            Screen::CreateIdentity => self.view_create_identity(),
             Screen::Unlock => self.view_unlock(),
             Screen::Welcome => self.view_welcome(),
             Screen::Chat => self.view_chat(),
         }
+    }
+
+    // ── Create Identity screen ──────────────────────────────────
+
+    fn view_create_identity(&self) -> iced::Element<Message> {
+        let pw_input = text_input("choose a passphrase", &self.passphrase)
+            .on_input(Message::PassphraseChanged)
+            .secure(true)
+            .padding(10)
+            .size(16);
+
+        let confirm_input = text_input("confirm passphrase", &self.passphrase_confirm)
+            .on_input(Message::PassphraseConfirmChanged)
+            .on_submit(Message::CreateClicked)
+            .secure(true)
+            .padding(10)
+            .size(16);
+
+        let create_btn = button(text("Create").size(16))
+            .padding([10, 24])
+            .style(button::primary)
+            .on_press(Message::CreateClicked);
+
+        let content = column![
+            text("P2P Chat").size(32).style(text::primary),
+            muted_text("No identity found. Create a new one:").size(14),
+            pw_input,
+            confirm_input,
+            create_btn,
+        ]
+        .spacing(16)
+        .align_x(Alignment::Center)
+        .width(Length::Fill);
+
+        column![
+            container(card(content))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+            status_bar(&self.status),
+        ]
+        .into()
     }
 
     // ── Unlock screen ───────────────────────────────────────────
