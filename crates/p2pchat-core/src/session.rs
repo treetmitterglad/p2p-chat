@@ -87,6 +87,7 @@ pub async fn connect_to_peer(
     let transport = Transport::bind()
         .await
         .context("bind transport")?;
+    transport.ensure_online().await;
 
     let ticket: Ticket = ticket_str
         .parse()

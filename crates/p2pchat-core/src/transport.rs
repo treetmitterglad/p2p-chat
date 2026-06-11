@@ -12,7 +12,7 @@ use std::str::FromStr;
 use anyhow::{Context, Result, anyhow};
 use iroh::{
     EndpointAddr, EndpointId, RelayUrl, SecretKey,
-    endpoint::{Connection, Endpoint, presets},
+    endpoint::{Connection, Endpoint, QuicTransportConfig, presets},
 };
 
 /// Application-Layer Protocol Negotiation identifier for p2pchat.
@@ -48,7 +48,11 @@ impl Transport {
     /// is optional — use [`ensure_online`](Self::ensure_online) when
     /// you need the endpoint address to include relay URLs.
     pub async fn bind() -> Result<Self> {
+        let transport_config = QuicTransportConfig::builder()
+            .initial_mtu(1280)
+            .build();
         let endpoint = Endpoint::builder(presets::N0)
+            .transport_config(transport_config)
             .alpns(vec![ALPN.to_vec()])
             .bind()
             .await
@@ -60,7 +64,11 @@ impl Transport {
     /// The corresponding node id is the public key derived from that seed.
     pub async fn bind_with_seed(seed: [u8; 32]) -> Result<Self> {
         let key = SecretKey::from_bytes(&seed);
+        let transport_config = QuicTransportConfig::builder()
+            .initial_mtu(1280)
+            .build();
         let endpoint = Endpoint::builder(presets::N0)
+            .transport_config(transport_config)
             .secret_key(key)
             .alpns(vec![ALPN.to_vec()])
             .bind()
