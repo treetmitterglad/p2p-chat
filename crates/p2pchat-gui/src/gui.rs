@@ -378,7 +378,7 @@ impl App {
         }
     }
 
-    fn view(&self) -> iced::Element<Message> {
+    fn view(&self) -> iced::Element<'_, Message> {
         match self.screen {
             Screen::CreateIdentity => self.view_create_identity(),
             Screen::Unlock => self.view_unlock(),
@@ -389,7 +389,7 @@ impl App {
 
     // ── Create Identity screen ──────────────────────────────────
 
-    fn view_create_identity(&self) -> iced::Element<Message> {
+    fn view_create_identity(&self) -> iced::Element<'_, Message> {
         let pw_input = text_input("choose a passphrase", &self.passphrase)
             .on_input(Message::PassphraseChanged)
             .secure(true)
@@ -432,7 +432,7 @@ impl App {
 
     // ── Unlock screen ───────────────────────────────────────────
 
-    fn view_unlock(&self) -> iced::Element<Message> {
+    fn view_unlock(&self) -> iced::Element<'_, Message> {
         let pw_input = text_input("identity passphrase", &self.passphrase)
             .on_input(Message::PassphraseChanged)
             .on_submit(Message::UnlockClicked)
@@ -469,7 +469,7 @@ impl App {
 
     // ── Welcome screen ──────────────────────────────────────────
 
-    fn view_welcome(&self) -> iced::Element<Message> {
+    fn view_welcome(&self) -> iced::Element<'_, Message> {
         let id = self.identity.as_ref().unwrap();
         let node_id = hex::encode(id.node_id());
         let node_id_short = format!("node id: {}…{}", &node_id[..8], &node_id[node_id.len()-8..]);
@@ -567,7 +567,7 @@ impl App {
 
     // ── Chat screen ─────────────────────────────────────────────
 
-    fn view_chat_header(&self) -> iced::Element<Message> {
+    fn view_chat_header(&self) -> iced::Element<'_, Message> {
         let peer_hex = self
             .session
             .lock()
@@ -593,7 +593,7 @@ impl App {
             .into()
     }
 
-    fn view_chat(&self) -> iced::Element<Message> {
+    fn view_chat(&self) -> iced::Element<'_, Message> {
         let header = self.view_chat_header();
 
         let mut msg_col = column![].spacing(6).width(Length::Fill);

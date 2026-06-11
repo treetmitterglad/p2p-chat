@@ -16,12 +16,16 @@ use crate::{identity, storage};
 pub enum SessionEvent {
     /// Successfully connected to peer.
     Connected {
+        /// 32-byte node ID of the remote peer.
         peer_id: [u8; 32],
+        /// Human-readable fingerprint (first 16 bytes of SHA-256 of peer's public key).
         fingerprint: String,
     },
     /// Received a text message.
     MessageReceived {
+        /// Decrypted plaintext message body.
         text: String,
+        /// Wall-clock timestamp when the message was received.
         timestamp: chrono::DateTime<Utc>,
     },
     /// Session closed cleanly.
