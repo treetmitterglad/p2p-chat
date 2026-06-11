@@ -88,9 +88,14 @@ pub async fn connect_to_peer(
         .parse()
         .context("parse ticket")?;
 
-    eprintln!("connecting...");
+    let ticket_addr = ticket.addr();
+    eprintln!(
+        "connecting to {} via relay {:?} ...",
+        ticket_addr.id,
+        ticket_addr.relay_urls().next()
+    );
     let conn = transport
-        .connect(ticket.addr())
+        .connect(ticket_addr)
         .await
         .context("connect to peer")?;
 
@@ -123,9 +128,10 @@ pub async fn listen_for_peer(
         .context("bind transport")?;
     transport.ensure_online().await;
 
-    let ticket = transport.ticket().to_string();
+    let ticket = transport.ticket();
     eprintln!("waiting for incoming connection...");
     eprintln!("share this ticket: {ticket}");
+    let ticket_str = ticket.to_string();
 
     let conn = transport
         .accept()
@@ -148,7 +154,7 @@ pub async fn listen_for_peer(
 
     spawn_session(store, identity, result, peer_id, reader, writer)
         .await
-        .map(|handle| (ticket, handle))
+        .map(|handle| (ticket_str, handle))
 }
 
 // ---------------------------------------------------------------------------

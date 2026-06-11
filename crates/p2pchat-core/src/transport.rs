@@ -18,8 +18,8 @@ use iroh::{
 /// Application-Layer Protocol Negotiation identifier for p2pchat.
 pub const ALPN: &[u8] = b"p2pchat/0";
 
-/// Default n0 relay URL (https://relay.iroh.computer/).
-pub const DEFAULT_RELAY_URL: &str = "https://relay.iroh.computer/";
+/// Default n0 relay URL (NA east production relay).
+pub const DEFAULT_RELAY_URL: &str = "https://use1-1.relay.n0.iroh-canary.iroh.link/";
 
 /// Default n0 relay as a parsed [`RelayUrl`] (panics if the constant is invalid,
 /// which it always is — it's a static string).
@@ -98,21 +98,34 @@ impl Transport {
     /// ticket will fall back to the hard-coded default relay URL.
     pub fn ticket(&self) -> Ticket {
         let addr = self.endpoint.addr();
+        let has_relay = addr.relay_urls().next().is_some();
+        if !has_relay {
+            eprintln!(
+                "WARN endpoint addr has no relay URLs (node_id={}), falling back to default",
+                self.node_id_hex()
+            );
+        }
         // If the addr has no relay URLs yet, attach the default relay
         // so the ticket always contains routable information.
-        if addr.relay_urls().next().is_none() {
-            return Ticket::from_addr(addr.with_relay_url(default_relay_url()));
-        }
-        Ticket::from_addr(addr)
+        let addr = if has_relay {
+            addr
+        } else {
+            addr.with_relay_url(default_relay_url())
+        };
+        let ticket = Ticket::from_addr(addr);
+        eprintln!("ticket: {ticket}");
+        ticket
     }
 
     /// Connect to a peer by [`EndpointAddr`]. Negotiates ALPN [`ALPN`].
     pub async fn connect(&self, addr: EndpointAddr) -> Result<Connection> {
+        use std::time::Duration;
+
         let remote = addr.id;
-        let conn = self
-            .endpoint
-            .connect(addr, ALPN)
+        eprintln!("connecting to {remote} via {:?}", addr.relay_urls().next());
+        let conn = tokio::time::timeout(Duration::from_secs(30), self.endpoint.connect(addr, ALPN))
             .await
+            .map_err(|_| anyhow!("connect to {remote}: timed out after 30s"))?
             .map_err(|e| anyhow!("connect to {remote}: {e:?}"))?;
         Ok(conn)
     }
@@ -175,9 +188,8 @@ impl std::fmt::Display for Ticket {
         let id = self.addr.id.to_string();
         let relay = self.addr.relay_urls().next();
         match relay {
-            Some(url) if url == &default_relay_url() => write!(f, "{id}"),
             Some(url) => write!(f, "{id}@{url}"),
-            None => write!(f, "{id}"),
+            None => write!(f, "{id}@{}", default_relay_url()),
         }
     }
 }
@@ -232,11 +244,12 @@ mod tests {
 
     #[test]
     fn ticket_round_trip_default_relay() {
-        // Use a deterministic test key so the node id is reproducible.
         let key = SecretKey::from_bytes(&[7u8; 32]);
         let id: EndpointId = key.public();
         let t = Ticket::from_node_id(id);
         let s = t.to_string();
+        // New display always includes @relay — even for the default.
+        assert!(s.contains('@'), "ticket must include relay URL: {s}");
         let parsed: Ticket = s.parse().expect("parse");
         assert_eq!(parsed, t);
         assert_eq!(parsed.node_id(), id);
